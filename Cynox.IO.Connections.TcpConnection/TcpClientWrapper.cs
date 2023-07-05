@@ -1,8 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Timers;
+using Timer = System.Timers.Timer;
 
 namespace Cynox.IO.Connections
 {
@@ -20,7 +24,9 @@ namespace Cynox.IO.Connections
         private TcpClient _Client;
         private readonly byte[] _Buffer;
         private readonly Timer _CheckConnectionTimer;
-
+        private CancellationTokenSource _ReceiveDataTaskCts = new CancellationTokenSource();
+        private Task _ReceiveDataTask;
+        
         #region Public Properties
 
         public IPAddress IpAddress { get; set; }
@@ -92,7 +98,7 @@ namespace Cynox.IO.Connections
 
             return 0;
         }
-
+        
         /// <summary>
         /// Performs a request for a remote host connection.
         /// </summary>
@@ -101,6 +107,8 @@ namespace Cynox.IO.Connections
         /// <exception cref="Exception">Throws an exception if connection fails.</exception>
         public void Connect(int timeout = 1000)
         {
+            Disconnect();
+
             try
             {
                 _Client = new TcpClient();
@@ -117,12 +125,13 @@ namespace Cynox.IO.Connections
                 _Client.EndConnect(asyncResult);
                 _Client.Client?.SetKeepAlive(2000, 500);
 
-                _Client?.Client?.BeginReceive(_Buffer, 0, _Buffer.Length, 0, ReceiveCallback, null);
+                StartReceiveDataTask();
                 _CheckConnectionTimer.Start();
             }
-            finally
+            catch (Exception)
             {
                 _Client?.Close();
+                throw;
             }
         }
 
@@ -133,6 +142,7 @@ namespace Cynox.IO.Connections
         public void Disconnect()
         {
             _CheckConnectionTimer.Stop();
+            StopReceiveDataTask();
 
             if (_Client?.Client == null)
             {
@@ -147,7 +157,7 @@ namespace Cynox.IO.Connections
             }
             catch (SocketException)
             {
-                // client nicht verbunden
+                // client not connected
             }
             catch (ObjectDisposedException)
             {
@@ -155,46 +165,62 @@ namespace Cynox.IO.Connections
             }
         }
 
-        private void ReceiveCallback(IAsyncResult asyncResult)
+        private void StartReceiveDataTask()
         {
-            try
+            // Return if task is still running
+            if (_ReceiveDataTask != null)
             {
-                Socket client = _Client.Client;
-
-                if (client == null)
-                {
+                if (!_ReceiveDataTask.IsCompleted) {
                     return;
                 }
+            }
 
-                int rcvCount = client.EndReceive(asyncResult);
+            _ReceiveDataTaskCts = new CancellationTokenSource();
 
-                if (rcvCount > 0)
+            // Continuously read data from the server until the connection is closed or an error occurs.
+            _ReceiveDataTask = Task.Factory.StartNew(async () =>
+            {
+                try
                 {
-                    byte[] buf = new byte[rcvCount];
-                    Array.Copy(_Buffer, buf, rcvCount);
+                    var stream = _Client.GetStream();
+                    int bytesRead;
 
-                    TcpClientWrapperDataReceivedEventArgs args = new TcpClientWrapperDataReceivedEventArgs(new List<byte>(buf));
-                    OnDataReceived(args);
+                    while ((bytesRead = await stream.ReadAsync(_Buffer, 0, _Buffer.Length, _ReceiveDataTaskCts.Token)) > 0)
+                    {
+                        if (_ReceiveDataTaskCts.IsCancellationRequested)
+                        {
+                            break;
+                        }
+
+                        var receivedData = new byte[bytesRead];
+                        Array.Copy(_Buffer, receivedData, bytesRead);
+                        OnDataReceived(new TcpClientWrapperDataReceivedEventArgs(new List<byte>(receivedData)));
+                    }
                 }
-
-                // Continue 
-                client.BeginReceive(_Buffer, 0, _Buffer.Length, 0, ReceiveCallback, null);
-            }
-            catch (SocketException)
-            {
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-            catch (NullReferenceException)
-            {
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine(e.ToString());
-            }
+                catch (IOException)
+                { }
+                catch (ObjectDisposedException)
+                { }
+                finally
+                {
+                    _ReceiveDataTaskCts.Cancel();
+                }
+            }, _ReceiveDataTaskCts.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
+        private void StopReceiveDataTask()
+        {
+            _ReceiveDataTaskCts.Cancel();
+
+            try
+            {
+                _ReceiveDataTask?.GetAwaiter().GetResult();
+            }
+            catch (Exception)
+            {
+                // Ignore exception since the task has completed anyway
+            }
+        }
 
         private void OnDataReceived(TcpClientWrapperDataReceivedEventArgs args)
         {
@@ -266,6 +292,8 @@ namespace Cynox.IO.Connections
                 _Client?.Dispose();
                 _CheckConnectionTimer?.Stop();
                 _CheckConnectionTimer?.Dispose();
+                _ReceiveDataTask?.Dispose();
+                _ReceiveDataTaskCts?.Dispose();
             }
 
             // Free any unmanaged objects here.

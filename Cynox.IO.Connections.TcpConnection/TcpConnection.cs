@@ -19,8 +19,14 @@ namespace Cynox.IO.Connections
         /// </summary>
         /// <param name="ipAddress">The target IP-address</param>
         /// <param name="port">The target port</param>
+        /// <exception cref="ArgumentNullException"><paramref name="ipAddress"></paramref> is null.</exception>
         public TcpConnection(IPAddress ipAddress, int port)
         {
+            if (ipAddress == null)
+            {
+                throw new ArgumentNullException(nameof(ipAddress));
+            }
+
             _Client = new TcpClientWrapper(ipAddress, port);
             _Client.DataReceived += ClientOnDataReceived;
         }
@@ -30,6 +36,8 @@ namespace Cynox.IO.Connections
         /// </summary>
         /// <param name="ipAddress">The target IP-address</param>
         /// <param name="port">The target port</param>
+        /// <exception cref="ArgumentNullException"><paramref name="ipAddress"></paramref> is null.</exception>
+        /// <exception cref="FormatException"><paramref name="ipAddress"></paramref> is not valid.</exception>
         public TcpConnection(string ipAddress, int port) : this(IPAddress.Parse(ipAddress), port)
         {
         }
@@ -37,10 +45,10 @@ namespace Cynox.IO.Connections
         /// <summary>
         /// Gets or sets the current target IP address.
         /// </summary>
-        public IPAddress IpAddress
-        {
+        /// <exception cref="ArgumentNullException">Value is null.</exception>
+        public IPAddress IpAddress {
             get => _Client.IpAddress;
-            set => _Client.IpAddress = value;
+            set => _Client.IpAddress = value ?? throw new ArgumentNullException();
         }
 
         /// <summary>
@@ -92,7 +100,8 @@ namespace Cynox.IO.Connections
         }
 
         /// <summary>
-        /// 
+        /// Closes the socket connection and allows reuse of the socket.
+        /// Disposes the underlying TcpClient instance and requests that the underlying TCP connection be closed. 
         /// </summary>
         /// <exception cref="ConnectionException"></exception>
         public void Disconnect()

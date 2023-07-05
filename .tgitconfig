@@ -1,0 +1,6 @@
+[bugtraq]
+	providerparams = "owner=Cynox-GmbH;repository=Cynox.IO.Connections.TcpConnection;keyword=Closes;reffullrepo=False;showprsbydefault=False"
+	provideruuid64 = {B2C6EC0F-8742-4792-9FDC-10635D2C118B}
+	url = https://github.com/Cynox-GmbH/Cynox.IO.Connections.TcpConnection/issues/%BUGID%
+	number = true
+	logregex = "(?:\\S+\\/\\S+)?#(\\d+)"
