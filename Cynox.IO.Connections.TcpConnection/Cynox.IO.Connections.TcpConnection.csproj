@@ -5,17 +5,25 @@
     <RootNamespace>Cynox.IO.Connections</RootNamespace>
     <GenerateDocumentationFile>True</GenerateDocumentationFile>
     <Title>Cynox.IO.Connections.TcpConnection</Title>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <Authors>Cynox GmbH</Authors>
     <Description>Implements a TCP connection based on Cynox.IO.Connections abstractions.</Description>
     <PackageProjectUrl>https://github.com/Cynox-GmbH/Cynox.IO.Connections.TcpConnection</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Cynox-GmbH/Cynox.IO.Connections.TcpConnection</RepositoryUrl>
     <PackageTags>Cynox;Abstractions;Connections;IConnection;TCP</PackageTags>
-    <PackageReleaseNotes>Bugfixes and improvements.</PackageReleaseNotes>
+    <PackageReleaseNotes></PackageReleaseNotes>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
-    <IncludeSymbols>True</IncludeSymbols>
+    <IncludeSymbols>False</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <DebugType>embedded</DebugType>
   </PropertyGroup>
 
   <ItemGroup>

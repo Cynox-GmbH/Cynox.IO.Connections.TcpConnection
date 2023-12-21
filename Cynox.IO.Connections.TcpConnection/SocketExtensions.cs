@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 
 namespace Cynox.IO.Connections
 {
@@ -66,6 +67,11 @@ namespace Cynox.IO.Connections
 		/// <returns>true if the keep alive infos were succefully modified.</returns>
 		public static bool SetKeepAlive(this Socket socket, ulong timeout, ulong interval)
 		{
+			if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+			{
+				return false;
+			}
+
 			const int BytesPerLong = 4; // 32 / 8
 			const int BitsPerByte = 8;
 
