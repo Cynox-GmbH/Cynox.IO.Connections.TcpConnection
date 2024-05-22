@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -7,6 +8,8 @@ namespace UnitTests
 {
     public class Tests
     {
+        const int TestPort = 11000;
+        
         [SetUp]
         public void Setup()
         {
@@ -45,41 +48,64 @@ namespace UnitTests
         }
 
         [Test]
+        [SuppressMessage("ReSharper", "AccessToDisposedClosure")]
+        public void ShouldNotReconnectIfInitialConnectionFails()
+        {
+            var cts = new CancellationTokenSource();
+            var c = new TcpConnection(IPAddress.Loopback, TestPort)
+                       {
+                           CheckConnectionInterval = TimeSpan.FromMilliseconds(500),
+                           TryReconnectInterval = TimeSpan.FromMilliseconds(1000),
+                           _autoReconnect = true
+                       };
+            
+            Assert.Throws<ConnectionException>(() => c.Connect());
+            Assert.That(() => c.IsConnected, Is.False, "Should be unable to connect");
+            var listenerTask = ListenAndRespondAsync("", cts.Token);
+            Assert.That(() => c.IsConnected, Is.False.After(5000, 100), "Connect failed");
+            cts.Cancel();
+            Assert.ThrowsAsync<OperationCanceledException>(async () => await listenerTask);
+            cts.Dispose();
+            c.Dispose();
+        }
+
+        [Test]
+        [SuppressMessage("ReSharper", "AccessToDisposedClosure")]
+        public void ShouldReconnectAfterDisconnect()
+        {
+            var cts = new CancellationTokenSource();
+            var c = new TcpConnection(IPAddress.Loopback, TestPort)
+                    {
+                        CheckConnectionInterval = TimeSpan.FromMilliseconds(500),
+                        TryReconnectInterval = TimeSpan.FromMilliseconds(1000),
+                        _autoReconnect = true
+                    };
+            var listenerTask = ListenAndRespondAsync("", cts.Token);
+            c.Connect();
+            Assert.That(() => c.IsConnected, Is.True.After(2000, 100), "Connect failed");
+            cts.Cancel();
+            cts = new CancellationTokenSource();
+            Assert.ThrowsAsync<OperationCanceledException>(async () => await listenerTask);
+            Assert.That(() => c.IsConnected, Is.False.After(1000, 100), "Should be disconnected");
+            listenerTask = ListenAndRespondAsync("", cts.Token);
+            Assert.That(() => c.IsConnected, Is.True.After(5000, 100), "Reconnect failed");
+            cts.Cancel();
+            Assert.ThrowsAsync<OperationCanceledException>(async () => await listenerTask);
+            cts.Dispose();
+            c.Dispose();
+        }
+
+        [Test]
+        [SuppressMessage("ReSharper", "AccessToDisposedClosure")]
         public async Task SendReceiveTest()
         {
-            const string TEST_MESSAGE = "Hello world!";
-            const string TEST_RESPONSE = "Hello back!";
-            const int TEST_PORT = 11000;
-
-            var localhostIp = IPAddress.Parse("127.0.0.1");
-            string messageReceivedByListener = "";
-
-            // Start listener
-            var listenerTask = Task.Run(async () =>
-            {
-                var ipEndPoint = new IPEndPoint(localhostIp, TEST_PORT);
-                using Socket listener = new(ipEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
-                listener.Bind(ipEndPoint);
-                listener.Listen(100);
-
-                // Wait for incoming connection
-                TestContext.WriteLine("Wait for incoming connection");
-                using var handler = await listener.AcceptAsync();
-                
-                // Receive message
-                var buffer = new byte[1024];
-                TestContext.WriteLine("Waiting for message");
-                int received = await handler.ReceiveAsync(buffer, SocketFlags.None);
-                messageReceivedByListener = Encoding.UTF8.GetString(buffer, 0, received);
-                TestContext.WriteLine("Message received: " + messageReceivedByListener);
-
-                // Send response
-                byte[] echoBytes = Encoding.UTF8.GetBytes(TEST_RESPONSE);
-                await handler.SendAsync(echoBytes, 0);
-            });
+            const string testMessage = "Hello world!";
+            const string testResponse = "Hello back!";
+            
+            var listenerTask = ListenAndRespondAsync(testResponse);
 
             // Create connection and send data to listener
-            var c = new TcpConnection(localhostIp, TEST_PORT);
+            var c = new TcpConnection(IPAddress.Loopback, TestPort);
             var messageReceivedByConnection = "";
 
             c.DataReceived += (_, args) =>
@@ -94,16 +120,47 @@ namespace UnitTests
 
             // Send message and check responses
             TestContext.WriteLine("Sending message");
-            c.Send(Encoding.UTF8.GetBytes(TEST_MESSAGE));
-            Assert.That(() => messageReceivedByListener, Is.EqualTo(TEST_MESSAGE).After(1000, 100), "Listener did not receive message");
-            Assert.That(() => messageReceivedByConnection, Is.EqualTo(TEST_RESPONSE).After(1000, 100), "Connection did not receive response");
+            c.Send(Encoding.UTF8.GetBytes(testMessage));
+
+            var messageReceivedByListener = await listenerTask;
+
+            Assert.That(() => messageReceivedByListener, Is.EqualTo(testMessage).After(1000, 100), "Listener did not receive message");
+            Assert.That(() => messageReceivedByConnection, Is.EqualTo(testResponse).After(1000, 100), "Connection did not receive response");
             
             Assert.DoesNotThrow(() => c.Disconnect(), "Connection should disconnect");
             Assert.That(!c.IsConnected, "Connection should report disconnected");
             Assert.That(c.Client?.Client, Is.Null, "Socket should be null after its disconnected");
             Assert.DoesNotThrow(() => c.Dispose());
-            
-            await listenerTask;
+            c.Dispose();
+        }
+
+
+        private async Task<string> ListenAndRespondAsync(string response, CancellationToken ct = default)
+        {
+            TestContext.WriteLine("Starting Listener");
+            var ipEndPoint = new IPEndPoint(IPAddress.Loopback, TestPort);
+            using Socket listener = new(ipEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+            listener.Bind(ipEndPoint);
+            listener.Listen(100);
+
+            // Wait for incoming connection
+            TestContext.WriteLine("Wait for incoming connection");
+
+            using var handler = await listener.AcceptAsync(ct);
+            TestContext.WriteLine("Client connected");
+
+            // Receive message
+            var buffer = new byte[1024];
+            TestContext.WriteLine("Waiting for message");
+            int received = await handler.ReceiveAsync(buffer, SocketFlags.None, ct);
+            var messageReceivedByListener = Encoding.UTF8.GetString(buffer, 0, received);
+            TestContext.WriteLine("Message received: " + messageReceivedByListener);
+
+            // Send response
+            var echoBytes = Encoding.UTF8.GetBytes(response);
+            await handler.SendAsync(echoBytes, 0, ct);
+
+            return messageReceivedByListener;
         }
     }
 }

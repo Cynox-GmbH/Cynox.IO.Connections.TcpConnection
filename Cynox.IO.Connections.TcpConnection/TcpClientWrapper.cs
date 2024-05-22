@@ -18,21 +18,58 @@ namespace Cynox.IO.Connections
     {
         public event Action<TcpClientWrapperDataReceivedEventArgs> DataReceived;
 
-        private const int DEFAULT_CHECK_CONNECTION_INTERVAL = 5000;
-        private const int DEFAULT_TRY_RECONNECT_INTERVAL = 30000;
+        private const int DefaultCheckConnectionInterval = 5000;
+        private const int DefaultTryReconnectInterval = 30000;
 
-        private TcpClient _Client;
-        private readonly byte[] _Buffer;
-        private readonly Timer _CheckConnectionTimer;
-        private CancellationTokenSource _ReceiveDataTaskCts = new CancellationTokenSource();
-        private Task _ReceiveDataTask;
-        
+        private TcpClient _client;
+        private readonly byte[] _buffer;
+        private readonly Timer _checkConnectionTimer;
+        private CancellationTokenSource _receiveDataTaskCts = new CancellationTokenSource();
+        private Task _receiveDataTask;
+        private TimeSpan _tryReconnectInterval = TimeSpan.FromMilliseconds(DefaultTryReconnectInterval);
+        private TimeSpan _checkConnectionInterval = TimeSpan.FromMilliseconds(DefaultCheckConnectionInterval);
+        private bool _autoReconnect;
+
         #region Public Properties
 
         public IPAddress IpAddress { get; set; }
         public int Port { get; set; }
-        public TimeSpan TryReconnectInterval { get; set; } = TimeSpan.FromMilliseconds(DEFAULT_TRY_RECONNECT_INTERVAL);
-        public TimeSpan CheckConnectionInterval { get; set; } = TimeSpan.FromMilliseconds(DEFAULT_CHECK_CONNECTION_INTERVAL);
+        
+        /// <summary>
+        /// Specifies the interval in which an attempt is made to reestablish a broken connection.
+        /// Range: 1s to 120s.
+        /// </summary>
+        public TimeSpan TryReconnectInterval
+        {
+            get => _tryReconnectInterval;
+            set
+            {
+                if (value < TimeSpan.FromSeconds(1) || value > TimeSpan.FromSeconds(120))
+                {
+                    throw new ArgumentOutOfRangeException(nameof(TryReconnectInterval));
+                }
+                
+                _tryReconnectInterval = value;
+            }
+        }
+
+        /// <summary>
+        /// Specifies the interval in which a check is made to see if the client is still connected.
+        /// Range: 100ms to 10s.
+        /// </summary>
+        public TimeSpan CheckConnectionInterval
+        {
+            get => _checkConnectionInterval;
+            set
+            {
+                if (value < TimeSpan.FromMilliseconds(100) && value > TimeSpan.FromSeconds(10))
+                {
+                    throw new ArgumentOutOfRangeException(nameof(CheckConnectionInterval));
+                }
+                
+                _checkConnectionInterval = value;
+            }
+        }
 
         /// <summary>
         /// Checks if the underlying Socket is still connected.
@@ -41,9 +78,9 @@ namespace Cynox.IO.Connections
         {
             get
             {
-                if (_Client?.Client is Socket socket)
+                if (_client?.Client is Socket socket)
                 {
-                    return socket.IsConnectedMsdn();
+                    return socket.IsConnectedPoll() && socket.IsConnectedMsdn();
                 }
 
                 return false;
@@ -53,7 +90,7 @@ namespace Cynox.IO.Connections
         /// <summary>
         /// Returns the underlying <see cref="TcpClient"/>.
         /// </summary>
-        public TcpClient Client => _Client;
+        public TcpClient Client => _client;
 
         #endregion
 
@@ -61,16 +98,12 @@ namespace Cynox.IO.Connections
         {
             IpAddress = address ?? throw new ArgumentNullException(nameof(address));
             Port = port;
-            _Buffer = new byte[bufferSize];
+            _buffer = new byte[bufferSize];
 
-            _CheckConnectionTimer = new Timer(DEFAULT_CHECK_CONNECTION_INTERVAL);
-            _CheckConnectionTimer.Elapsed += CheckConnectionTimer_OnElapsed;
-
-            _Client = new TcpClient();
-        }
-
-        public TcpClientWrapper(string ipAddress, int port) : this(IPAddress.Parse(ipAddress), port)
-        {
+            _checkConnectionTimer = new Timer(CheckConnectionInterval.TotalMilliseconds);
+            _checkConnectionTimer.Elapsed += CheckConnectionTimer_OnElapsed;
+            
+            _client = new TcpClient();
         }
 
         /// <summary>
@@ -90,47 +123,58 @@ namespace Cynox.IO.Connections
                 throw new ArgumentNullException(nameof(data));
             }
 
-            if (_Client?.Client != null)
+            if (_client?.Client == null)
             {
-                _Client.Client.Blocking = blocking;
-                return _Client.Client.Send(data.ToArray(), flags);
+                return 0;
             }
+            
+            _client.Client.Blocking = blocking;
+            return _client.Client.Send(data.ToArray(), flags);
 
-            return 0;
         }
-        
+
         /// <summary>
         /// Performs a request for a remote host connection.
         /// </summary>
+        /// <param name="autoReconnect">Automatically try to reconnect, if connection was interrupted. Only applies, if initial connection was successful.</param>
+        /// <param name="reconnectOnFail">Automatically try to reconnect, even if the initial connection fails. Requires <see cref="autoReconnect"/> to be true.</param>
         /// <param name="timeout"></param>
         /// <returns></returns>
         /// <exception cref="Exception">Throws an exception if connection fails.</exception>
-        public void Connect(int timeout = 1000)
+        public void Connect(bool autoReconnect, bool reconnectOnFail = false, int timeout = 1000)
         {
+            _autoReconnect = autoReconnect;
             Disconnect();
 
             try
             {
-                _Client = new TcpClient();
+                _client = new TcpClient();
 
                 // Use async connect, to be able to specify timeout.
-                var asyncResult = _Client.BeginConnect(IpAddress.ToString(), Port, null, null);
+                var asyncResult = _client.BeginConnect(IpAddress.ToString(), Port, null, null);
                 asyncResult.AsyncWaitHandle.WaitOne(timeout);
 
-                if (!_Client.Connected)
+                if (!_client.Connected)
                 {
+                    if (reconnectOnFail)
+                    {
+                        _checkConnectionTimer.Interval = TryReconnectInterval.TotalMilliseconds;
+                        _checkConnectionTimer.Enabled = _autoReconnect;
+                    }
+
                     throw new Exception($"Failed to connect to {IpAddress}:{Port}");
                 }
 
-                _Client.EndConnect(asyncResult);
-                _Client.Client?.SetKeepAlive(2000, 500);
+                _client.EndConnect(asyncResult);
+                _client.Client?.SetKeepAlive(2000, 500);
 
                 StartReceiveDataTask();
-                _CheckConnectionTimer.Start();
+                _checkConnectionTimer.Interval = CheckConnectionInterval.TotalMilliseconds;
+                _checkConnectionTimer.Enabled = _autoReconnect;
             }
             catch (Exception)
             {
-                _Client?.Close();
+                _client?.Close();
                 throw;
             }
         }
@@ -141,19 +185,19 @@ namespace Cynox.IO.Connections
         /// </summary>
         public void Disconnect()
         {
-            _CheckConnectionTimer.Stop();
+            _checkConnectionTimer.Stop();
             StopReceiveDataTask();
 
-            if (_Client?.Client == null)
+            if (_client?.Client == null)
             {
                 return;
             }
 
             try
             {
-                var socket = _Client.Client;
+                var socket = _client.Client;
                 socket.Disconnect(false);
-                _Client?.Close();
+                _client?.Close();
             }
             catch (SocketException)
             {
@@ -168,32 +212,32 @@ namespace Cynox.IO.Connections
         private void StartReceiveDataTask()
         {
             // Return if task is still running
-            if (_ReceiveDataTask != null)
+            if (_receiveDataTask != null)
             {
-                if (!_ReceiveDataTask.IsCompleted) {
+                if (!_receiveDataTask.IsCompleted) {
                     return;
                 }
             }
 
-            _ReceiveDataTaskCts = new CancellationTokenSource();
+            _receiveDataTaskCts = new CancellationTokenSource();
 
             // Continuously read data from the server until the connection is closed or an error occurs.
-            _ReceiveDataTask = Task.Factory.StartNew(async () =>
+            _receiveDataTask = Task.Factory.StartNew(async () =>
             {
                 try
                 {
-                    var stream = _Client.GetStream();
+                    var stream = _client.GetStream();
                     int bytesRead;
 
-                    while ((bytesRead = await stream.ReadAsync(_Buffer, 0, _Buffer.Length, _ReceiveDataTaskCts.Token)) > 0)
+                    while ((bytesRead = await stream.ReadAsync(_buffer, 0, _buffer.Length, _receiveDataTaskCts.Token)) > 0)
                     {
-                        if (_ReceiveDataTaskCts.IsCancellationRequested)
+                        if (_receiveDataTaskCts.IsCancellationRequested)
                         {
                             break;
                         }
 
                         var receivedData = new byte[bytesRead];
-                        Array.Copy(_Buffer, receivedData, bytesRead);
+                        Array.Copy(_buffer, receivedData, bytesRead);
                         OnDataReceived(new TcpClientWrapperDataReceivedEventArgs(new List<byte>(receivedData)));
                     }
                 }
@@ -203,18 +247,18 @@ namespace Cynox.IO.Connections
                 { }
                 finally
                 {
-                    _ReceiveDataTaskCts.Cancel();
+                    _receiveDataTaskCts.Cancel();
                 }
-            }, _ReceiveDataTaskCts.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            }, _receiveDataTaskCts.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
         private void StopReceiveDataTask()
         {
-            _ReceiveDataTaskCts.Cancel();
+            _receiveDataTaskCts.Cancel();
 
             try
             {
-                _ReceiveDataTask?.GetAwaiter().GetResult();
+                _receiveDataTask?.GetAwaiter().GetResult();
             }
             catch (Exception)
             {
@@ -230,13 +274,13 @@ namespace Cynox.IO.Connections
 
         private void CheckConnectionTimer_OnElapsed(object sender, ElapsedEventArgs e)
         {
-            _CheckConnectionTimer.Stop();
+            _checkConnectionTimer.Stop();
 
             try
             {
                 if (IsConnected)
                 {
-                    _CheckConnectionTimer.Interval = CheckConnectionInterval.TotalMilliseconds;
+                    _checkConnectionTimer.Interval = CheckConnectionInterval.TotalMilliseconds;
                 }
                 else
                 {
@@ -245,14 +289,14 @@ namespace Cynox.IO.Connections
 
                     try
                     {
-                        Connect();
+                        Connect(_autoReconnect);
                         // Re-connect successful, switch back to CheckConnectionInterval.
-                        _CheckConnectionTimer.Interval = CheckConnectionInterval.TotalMilliseconds;
+                        _checkConnectionTimer.Interval = CheckConnectionInterval.TotalMilliseconds;
                     }
                     catch
                     {
                         // Re-connect failed, switch to TryReconnectInterval.
-                        _CheckConnectionTimer.Interval = TryReconnectInterval.TotalMilliseconds;
+                        _checkConnectionTimer.Interval = TryReconnectInterval.TotalMilliseconds;
                     }
                 }
             }
@@ -262,14 +306,14 @@ namespace Cynox.IO.Connections
             }
             finally
             {
-                _CheckConnectionTimer.Start();
+                _checkConnectionTimer.Enabled = _autoReconnect;
             }
         }
 
         #region IDisposable
 
-        // Flag: Has Dispose already been called?
-        private bool _Disposed;
+        // Flag: Has Dispose() already been called?
+        private bool _disposed;
 
         // Public implementation of Dispose pattern callable by consumers.
         public void Dispose()
@@ -281,7 +325,7 @@ namespace Cynox.IO.Connections
         // Protected implementation of Dispose pattern.
         protected virtual void Dispose(bool disposing)
         {
-            if (_Disposed)
+            if (_disposed)
             {
                 return;
             }
@@ -289,15 +333,15 @@ namespace Cynox.IO.Connections
             if (disposing)
             {
                 Disconnect();
-                _Client?.Dispose();
-                _CheckConnectionTimer?.Stop();
-                _CheckConnectionTimer?.Dispose();
-                _ReceiveDataTask?.Dispose();
-                _ReceiveDataTaskCts?.Dispose();
+                _client?.Dispose();
+                _checkConnectionTimer?.Stop();
+                _checkConnectionTimer?.Dispose();
+                _receiveDataTask?.Dispose();
+                _receiveDataTaskCts?.Dispose();
             }
 
             // Free any unmanaged objects here.
-            _Disposed = true;
+            _disposed = true;
         }
 
         #endregion

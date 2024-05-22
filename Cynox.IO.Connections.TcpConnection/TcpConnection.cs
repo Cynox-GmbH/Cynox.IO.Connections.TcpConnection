@@ -4,31 +4,31 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using JetBrains.Annotations;
 
 namespace Cynox.IO.Connections
 {
     /// <summary>
     /// <see cref="IConnection"/> to be used for TCP connections.
     /// </summary>
+    [PublicAPI]
     public class TcpConnection : IConnection
     {
-        private readonly TcpClientWrapper _Client;
+        private readonly TcpClientWrapper _client;
+        private bool _autoReconnect;
 
-        /// <summary>
-        /// Creates a new instance.
-        /// </summary>
-        /// <param name="ipAddress">The target IP-address</param>
-        /// <param name="port">The target port</param>
-        /// <exception cref="ArgumentNullException"><paramref name="ipAddress"></paramref> is null.</exception>
-        public TcpConnection(IPAddress ipAddress, int port)
+        /// <inheritdoc cref="TcpClientWrapper.TryReconnectInterval"/>
+        public TimeSpan TryReconnectInterval
         {
-            if (ipAddress == null)
-            {
-                throw new ArgumentNullException(nameof(ipAddress));
-            }
+            get => _client.TryReconnectInterval;
+            set => _client.TryReconnectInterval = value;
+        }
 
-            _Client = new TcpClientWrapper(ipAddress, port);
-            _Client.DataReceived += ClientOnDataReceived;
+        /// <inheritdoc cref="TcpClientWrapper.CheckConnectionInterval"/>
+        public TimeSpan CheckConnectionInterval
+        {
+            get => _client.CheckConnectionInterval;
+            set => _client.CheckConnectionInterval = value;
         }
 
         /// <summary>
@@ -37,8 +37,28 @@ namespace Cynox.IO.Connections
         /// <param name="ipAddress">The target IP-address</param>
         /// <param name="port">The target port</param>
         /// <exception cref="ArgumentNullException"><paramref name="ipAddress"></paramref> is null.</exception>
+        /// <param name="autoReconnect">Automatically try to reconnect, if connection was interrupted. Only applies, if initial connection was successful.</param>
+        public TcpConnection(IPAddress ipAddress, int port, bool autoReconnect = true)
+        {
+            if (ipAddress == null)
+            {
+                throw new ArgumentNullException(nameof(ipAddress));
+            }
+
+            _client = new TcpClientWrapper(ipAddress, port);
+            _client.DataReceived += ClientOnDataReceived;
+            _autoReconnect = autoReconnect;
+        }
+
+        /// <summary>
+        /// Creates a new instance.
+        /// </summary>
+        /// <param name="ipAddress">The target IP-address</param>
+        /// <param name="port">The target port</param>
+        /// <param name="autoReconnect">Automatically try to reconnect, if connection was interrupted. Only applies, if initial connection was successful.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="ipAddress"></paramref> is null.</exception>
         /// <exception cref="FormatException"><paramref name="ipAddress"></paramref> is not valid.</exception>
-        public TcpConnection(string ipAddress, int port) : this(IPAddress.Parse(ipAddress), port)
+        public TcpConnection(string ipAddress, int port, bool autoReconnect = true) : this(IPAddress.Parse(ipAddress), port, autoReconnect)
         {
         }
 
@@ -47,8 +67,8 @@ namespace Cynox.IO.Connections
         /// </summary>
         /// <exception cref="ArgumentNullException">Value is null.</exception>
         public IPAddress IpAddress {
-            get => _Client.IpAddress;
-            set => _Client.IpAddress = value ?? throw new ArgumentNullException();
+            get => _client.IpAddress;
+            set => _client.IpAddress = value ?? throw new ArgumentNullException();
         }
 
         /// <summary>
@@ -56,15 +76,15 @@ namespace Cynox.IO.Connections
         /// </summary>
         public int Port
         {
-            get => _Client.Port;
-            set => _Client.Port = value;
+            get => _client.Port;
+            set => _client.Port = value;
         }
 
         /// <summary>
         /// Returns the underlying <see cref="TcpClient"/>.
         /// </summary>
         /// <remarks>The client may have already been disposed if the connection is closed.</remarks>
-        public TcpClient Client => _Client?.Client;
+        public TcpClient Client => _client?.Client;
 
         private void ClientOnDataReceived(TcpClientWrapperDataReceivedEventArgs args)
         {
@@ -91,7 +111,7 @@ namespace Cynox.IO.Connections
         {
             try
             {
-                _Client.Connect();
+                _client.Connect(_autoReconnect);
             }
             catch (Exception ex)
             {
@@ -108,7 +128,7 @@ namespace Cynox.IO.Connections
         {
             try
             {
-                _Client.Disconnect();
+                _client.Disconnect();
             }
             catch (Exception ex)
             {
@@ -123,9 +143,9 @@ namespace Cynox.IO.Connections
         {
             get
             {
-                if (_Client != null)
+                if (_client != null)
                 {
-                    return _Client.IsConnected;
+                    return _client.IsConnected;
                 }
 
                 return false;
@@ -142,12 +162,12 @@ namespace Cynox.IO.Connections
 
             try
             {
-                _Client?.Send(data.ToList());
+                _client?.Send(data.ToList());
             }
             catch (Exception ex)
             {
                 Debug.WriteLine(ex.Message);
-                throw new ConnectionException("", ex);
+                throw new ConnectionException("Sending data failed", ex);
             }
         }
 
@@ -161,7 +181,7 @@ namespace Cynox.IO.Connections
 
         #region IDisposable
 
-        private bool _Disposed;
+        private bool _disposed;
 
         /// <inheritdoc/>
         public void Dispose()
@@ -176,7 +196,7 @@ namespace Cynox.IO.Connections
         /// <param name="disposing"></param>
         protected virtual void Dispose(bool disposing)
         {
-            if (_Disposed)
+            if (_disposed)
             {
                 return;
             }
@@ -184,10 +204,10 @@ namespace Cynox.IO.Connections
             if (disposing)
             {
                 Disconnect();
-                _Client.Dispose();
+                _client.Dispose();
             }
 
-            _Disposed = true;
+            _disposed = true;
         }
 
         #endregion

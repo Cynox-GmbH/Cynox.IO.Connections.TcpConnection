@@ -6,12 +6,30 @@ namespace Cynox.IO.Connections
 {
 	internal static class SocketExtensions
 	{
-		/// <summary>
-		/// Checks if the Socket is still connected by performing a non-blocking, zero-byte Send() call.
-		/// </summary>
-		/// <param name="client"></param>
-		/// <returns>true if connected, otherwise false</returns>
-		public static bool IsConnectedMsdn(this Socket client)
+        /// <summary>
+        /// Polls the connection to check if the connection is still active.
+        /// Also checks the Socket.Connected property in case the socket has not been initialized in the first place.
+        /// </summary>
+        /// <param name="s"></param>
+        /// <returns></returns>
+        public static bool IsConnectedPoll(this Socket s)
+        {
+            try
+            {
+                return !((s.Poll(1000, SelectMode.SelectRead) && s.Available == 0) || !s.Connected);
+            }
+            catch (ObjectDisposedException)
+            {
+                return false;
+            }
+        }
+		
+        /// <summary>
+        /// Checks if the Socket is still connected by performing a non-blocking, zero-byte Send() call.
+        /// </summary>
+        /// <param name="client"></param>
+        /// <returns>true if connected, otherwise false</returns>
+        public static bool IsConnectedMsdn(this Socket client)
 		{
 			// From MSDN:
 			// The Connected property gets the connection state of the Socket as of the last I/O operation.
@@ -24,24 +42,28 @@ namespace Cynox.IO.Connections
 			// If you call Connect on a User Datagram Protocol(UDP) socket, the Connected property always returns true;
 			// however, this action does not change the inherent connectionless nature of UDP.
 
-			bool blockingState = client.Blocking;
-			bool result = false;
+			var blockingState = client.Blocking;
+			var result = false;
 
-			try
-			{
-				byte[] tmp = new byte[1];
-				client.Blocking = false;
-				client.Send(tmp, 0, 0);
-				result = true;
-			}
-			catch (SocketException e)
-			{
-				// 10035 == WSAEWOULDBLOCK
-				if (e.NativeErrorCode.Equals(10035))
-				{
-					result = true;
-				}
-			}
+            try
+            {
+                var tmp = new byte[1];
+                client.Blocking = false;
+                client.Send(tmp, 0, 0);
+                result = true;
+            }
+            catch (SocketException e)
+            {
+                // 10035 == WSAEWOULDBLOCK
+                if (e.NativeErrorCode.Equals(10035))
+                {
+                    result = true;
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                return false;
+            }
 
 			try
 			{
@@ -51,8 +73,12 @@ namespace Cynox.IO.Connections
 			{
 				// setting the Blocking property seems to fail if a SocketException was thrown on Send()
 			}
+            catch (ObjectDisposedException)
+            {
+                return false;
+            }
 
-			return result;
+            return result;
 		}
 
 		/// <summary>
@@ -72,8 +98,8 @@ namespace Cynox.IO.Connections
 				return false;
 			}
 
-			const int BytesPerLong = 4; // 32 / 8
-			const int BitsPerByte = 8;
+			const int bytesPerLong = 4; // 32 / 8
+			const int bitsPerByte = 8;
 
 			try
 			{
@@ -85,17 +111,17 @@ namespace Cynox.IO.Connections
 				};
 
 				// Pack input into byte struct.
-				byte[] inValue = new byte[3 * BytesPerLong];
-				for (int i = 0; i < input.Length; i++)
+				var inValue = new byte[3 * bytesPerLong];
+				for (var i = 0; i < input.Length; i++)
 				{
-					inValue[i * BytesPerLong + 3] = (byte)((input[i] >> ((BytesPerLong - 1) * BitsPerByte)) & 0xff);
-					inValue[i * BytesPerLong + 2] = (byte)((input[i] >> ((BytesPerLong - 2) * BitsPerByte)) & 0xff);
-					inValue[i * BytesPerLong + 1] = (byte)((input[i] >> ((BytesPerLong - 3) * BitsPerByte)) & 0xff);
-					inValue[i * BytesPerLong + 0] = (byte)((input[i] >> ((BytesPerLong - 4) * BitsPerByte)) & 0xff);
+					inValue[i * bytesPerLong + 3] = (byte)((input[i] >> ((bytesPerLong - 1) * bitsPerByte)) & 0xff);
+					inValue[i * bytesPerLong + 2] = (byte)((input[i] >> ((bytesPerLong - 2) * bitsPerByte)) & 0xff);
+					inValue[i * bytesPerLong + 1] = (byte)((input[i] >> ((bytesPerLong - 3) * bitsPerByte)) & 0xff);
+					inValue[i * bytesPerLong + 0] = (byte)((input[i] >> ((bytesPerLong - 4) * bitsPerByte)) & 0xff);
 				}
 
 				// Create bytestruct for result (bytes pending on server socket).
-				byte[] outValue = BitConverter.GetBytes(0);
+				var outValue = BitConverter.GetBytes(0);
 
 				// Write SIO_VALS to Socket IOControl.
 				socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);

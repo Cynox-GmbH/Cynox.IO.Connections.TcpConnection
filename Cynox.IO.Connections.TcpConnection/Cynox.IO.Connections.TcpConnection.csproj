@@ -5,7 +5,7 @@
     <RootNamespace>Cynox.IO.Connections</RootNamespace>
     <GenerateDocumentationFile>True</GenerateDocumentationFile>
     <Title>Cynox.IO.Connections.TcpConnection</Title>
-    <Version>1.1.1</Version>
+    <Version>1.2.0</Version>
     <Authors>Cynox GmbH</Authors>
     <Description>Implements a TCP connection based on Cynox.IO.Connections abstractions.</Description>
     <PackageProjectUrl>https://github.com/Cynox-GmbH/Cynox.IO.Connections.TcpConnection</PackageProjectUrl>
@@ -39,6 +39,7 @@
 
   <ItemGroup>
     <PackageReference Include="Cynox.IO.Connections" Version="1.0.0" />
+    <PackageReference Include="JetBrains.Annotations" Version="2023.3.0" PrivateAssets="All" />
   </ItemGroup>
 
 </Project>
