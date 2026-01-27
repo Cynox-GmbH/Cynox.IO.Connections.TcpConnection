@@ -1,11 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Timers;
+using JetBrains.Annotations;
 using Timer = System.Timers.Timer;
 
 namespace Cynox.IO.Connections
@@ -14,7 +16,7 @@ namespace Cynox.IO.Connections
     /// Wrapper around the TcpClient class that simplifies usage when sending and receiving data
     /// from a connected socket. Provides automatic reconnect.
     /// </summary>
-    internal class TcpClientWrapper : IDisposable
+    internal sealed class TcpClientWrapper : IDisposable
     {
         public event Action<TcpClientWrapperDataReceivedEventArgs> DataReceived;
 
@@ -24,7 +26,7 @@ namespace Cynox.IO.Connections
         private TcpClient _client;
         private readonly byte[] _buffer;
         private readonly Timer _checkConnectionTimer;
-        private CancellationTokenSource _receiveDataTaskCts = new CancellationTokenSource();
+        private CancellationTokenSource _receiveDataTaskCts;
         private Task _receiveDataTask;
         private TimeSpan _tryReconnectInterval = TimeSpan.FromMilliseconds(DefaultTryReconnectInterval);
         private TimeSpan _checkConnectionInterval = TimeSpan.FromMilliseconds(DefaultCheckConnectionInterval);
@@ -116,6 +118,7 @@ namespace Cynox.IO.Connections
         /// <exception cref="SocketException"></exception>
         /// <exception cref="ArgumentNullException"></exception>
         /// <exception cref="ObjectDisposedException"></exception>
+        [PublicAPI]
         public int Send(List<byte> data, bool blocking = true, SocketFlags flags = SocketFlags.None)
         {
             if (data == null)
@@ -130,7 +133,6 @@ namespace Cynox.IO.Connections
             
             _client.Client.Blocking = blocking;
             return _client.Client.Send(data.ToArray(), flags);
-
         }
 
         /// <summary>
@@ -205,64 +207,88 @@ namespace Cynox.IO.Connections
             }
             catch (ObjectDisposedException)
             {
-                // client bereits zerstört
+                // client already disposed
             }
         }
 
         private void StartReceiveDataTask()
         {
-            // Return if task is still running
-            if (_receiveDataTask != null)
+            if (_receiveDataTask != null && !_receiveDataTask.IsCompleted)
             {
-                if (!_receiveDataTask.IsCompleted) {
-                    return;
-                }
+                return;
             }
 
             _receiveDataTaskCts = new CancellationTokenSource();
 
-            // Continuously read data from the server until the connection is closed or an error occurs.
-            _receiveDataTask = Task.Factory.StartNew(async () =>
+            _receiveDataTask = ReceiveLoopAsync(_receiveDataTaskCts.Token);
+        }
+
+        private async Task ReceiveLoopAsync(CancellationToken token)
+        {
+            try
             {
-                try
-                {
-                    var stream = _client.GetStream();
-                    int bytesRead;
+                var stream = _client.GetStream();
 
-                    while ((bytesRead = await stream.ReadAsync(_buffer, 0, _buffer.Length, _receiveDataTaskCts.Token)) > 0)
+                while (true)
+                {
+                    int bytesRead = await stream.ReadAsync(_buffer, 0, _buffer.Length, token)
+                        .ConfigureAwait(false);
+
+                    if (bytesRead == 0)
                     {
-                        if (_receiveDataTaskCts.IsCancellationRequested)
-                        {
-                            break;
-                        }
-
-                        var receivedData = new byte[bytesRead];
-                        Array.Copy(_buffer, receivedData, bytesRead);
-                        OnDataReceived(new TcpClientWrapperDataReceivedEventArgs(new List<byte>(receivedData)));
+                        break; // connection closed
                     }
+
+                    var received = new byte[bytesRead];
+                    Buffer.BlockCopy(_buffer, 0, received, 0, bytesRead);
+
+                    OnDataReceived(new TcpClientWrapperDataReceivedEventArgs(received.ToList()));
                 }
-                catch (IOException)
-                { }
-                catch (ObjectDisposedException)
-                { }
-                finally
-                {
-                    _receiveDataTaskCts.Cancel();
-                }
-            }, _receiveDataTaskCts.Token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            }
+            catch (OperationCanceledException)
+            {
+                // expected on shutdown
+            }
+            catch (IOException)
+            {
+                // connection dropped
+            }
+            catch (ObjectDisposedException)
+            {
+                // stream closed
+            }
         }
 
         private void StopReceiveDataTask()
         {
-            _receiveDataTaskCts.Cancel();
+            StopReceiveDataAsync().GetAwaiter().GetResult();
+        }
+
+        private async Task StopReceiveDataAsync()
+        {
+            // Nothing to stop
+            if (_receiveDataTask == null)
+            {
+                return;
+            }
 
             try
             {
-                _receiveDataTask?.GetAwaiter().GetResult();
+                // Signal cancellation
+                _receiveDataTaskCts?.Cancel();
+
+                // Wait for the receive-loop to finish
+                await _receiveDataTask.ConfigureAwait(false);
             }
-            catch (Exception)
+            catch (OperationCanceledException)
             {
-                // Ignore exception since the task has completed anyway
+                // Expected when stopping
+            }
+            finally
+            {
+                _receiveDataTaskCts?.Dispose();
+                _receiveDataTaskCts = null;
+                _receiveDataTask = null;
             }
         }
 
@@ -319,11 +345,10 @@ namespace Cynox.IO.Connections
         public void Dispose()
         {
             Dispose(true);
-            GC.SuppressFinalize(this);
         }
 
         // Protected implementation of Dispose pattern.
-        protected virtual void Dispose(bool disposing)
+        private void Dispose(bool disposing)
         {
             if (_disposed)
             {
