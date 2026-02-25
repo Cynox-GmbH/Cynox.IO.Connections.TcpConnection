@@ -139,7 +139,7 @@ namespace Cynox.IO.Connections
         /// Performs a request for a remote host connection.
         /// </summary>
         /// <param name="autoReconnect">Automatically try to reconnect, if connection was interrupted. Only applies, if initial connection was successful.</param>
-        /// <param name="reconnectOnFail">Automatically try to reconnect, even if the initial connection fails. Requires <see cref="autoReconnect"/> to be true.</param>
+        /// <param name="reconnectOnFail">Automatically try to reconnect, even if the initial connection fails. Requires <paramref name="autoReconnect"/> to be true.</param>
         /// <param name="timeout"></param>
         /// <returns></returns>
         /// <exception cref="Exception">Throws an exception if connection fails.</exception>
