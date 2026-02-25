@@ -112,12 +112,12 @@ public class Tests
         };
 
         // Connect
-        TestContext.WriteLine("Connecting");
+        await TestContext.Out.WriteLineAsync("Connecting");
         Assert.That(() => c.Connect(), Throws.Nothing.After(1000, 100));
         Assert.That(c.IsConnected, "Connection should report connected");
 
         // Send message and check responses
-        TestContext.WriteLine("Sending message");
+        await TestContext.Out.WriteLineAsync("Sending message");
         c.Send(Encoding.UTF8.GetBytes(testMessage));
 
         var messageReceivedByListener = await listenerTask;
@@ -135,24 +135,24 @@ public class Tests
 
     private async Task<string> ListenAndRespondAsync(string response, CancellationToken ct = default)
     {
-        TestContext.WriteLine("Starting Listener");
+        await TestContext.Out.WriteLineAsync("Starting Listener");
         var ipEndPoint = new IPEndPoint(IPAddress.Loopback, TestPort);
         using Socket listener = new(ipEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
         listener.Bind(ipEndPoint);
         listener.Listen(100);
 
         // Wait for incoming connection
-        TestContext.WriteLine("Wait for incoming connection");
+        await TestContext.Out.WriteLineAsync("Wait for incoming connection");
 
         using var handler = await listener.AcceptAsync(ct);
-        TestContext.WriteLine("Client connected");
+        await TestContext.Out.WriteLineAsync("Client connected");
 
         // Receive message
         var buffer = new byte[1024];
-        TestContext.WriteLine("Waiting for message");
+        await TestContext.Out.WriteLineAsync("Waiting for message");
         int received = await handler.ReceiveAsync(buffer, SocketFlags.None, ct);
         var messageReceivedByListener = Encoding.UTF8.GetString(buffer, 0, received);
-        TestContext.WriteLine("Message received: " + messageReceivedByListener);
+        await TestContext.Out.WriteLineAsync("Message received: " + messageReceivedByListener);
 
         // Send response
         var echoBytes = Encoding.UTF8.GetBytes(response);
